@@ -1,0 +1,14 @@
+{
+	"name": "Average of Response Time",
+	"run_every": 45,
+	"index": "logstash-apache-*",
+    "alert": {
+        "type": "telegram",
+        "config": {
+            "bot_token": "<INSERT_BOT_TOKEN_HERE>",
+            "room_id": "<INSERT_CHAT_ID_HERE>"
+        },
+        "expr": "${es.aggregations['1'].value} > 0",
+        "text": "\ud83d\udc49 *Average Response Time*\ud83c\udf85\n${(es.aggregations['1'].value).toFixed(2)} seconds. \ud83d\ude31"
+    }
+}

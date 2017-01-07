@@ -1,0 +1,4 @@
+{
+    "es_host": "localhost:9200",
+    "es_log_level": "info"
+}

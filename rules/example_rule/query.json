@@ -1,0 +1,36 @@
+{
+  "size": 0,
+  "query": {
+    "filtered": {
+      "query": {
+        "query_string": {
+          "query": "*",
+          "analyze_wildcard": true
+        }
+      },
+      "filter": {
+        "bool": {
+          "must": [
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": ${PARAM.CURRENT_TIME_MS-5minutes},
+                  "lte": ${PARAM.CURRENT_TIME_MS},
+                  "format": "epoch_millis"
+                }
+              }
+            }
+          ],
+          "must_not": []
+        }
+      }
+    }
+  },
+  "aggs": {
+    "1": {
+      "avg": {
+        "field": "process_time_seconds"
+      }
+    }
+  }
+}
