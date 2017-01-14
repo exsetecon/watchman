@@ -2,13 +2,28 @@
 	"name": "Average of Response Time",
 	"run_every": 45,
 	"index": "logstash-apache-*",
-    "alert": {
-        "type": "telegram",
-        "config": {
-            "bot_token": "<INSERT_BOT_TOKEN_HERE>",
-            "room_id": "<INSERT_CHAT_ID_HERE>"
-        },
-        "expr": "${es.aggregations['1'].value} > 0",
-        "text": "\ud83d\udc49 *Average Response Time*\ud83c\udf85\n${(es.aggregations['1'].value).toFixed(2)} seconds. \ud83d\ude31"
-    }
+	"expr": "${es.aggregations['1'].value} > 2",
+	"alert": [
+		{
+			"type": "telegram",
+			"config": {
+				"bot_token": "<INSERT_BOT_TOKEN_HERE>",
+				"room_id": "<INSERT_CHAT_ID_HERE>"
+			},
+			"text": "*Apache Response Time*\n\nAverage Respone Time is ${(es.aggregations['1'].value).toFixed(2)} seconds."
+		},
+		{
+			"type": "email",
+			"config": {
+				"host": "<SMTP_HOST_HERE>",
+				"from_email": "<FROM_EMAIL>",
+				"username": "<USERNAME>",
+				"password": "<PASSWORD>",
+				"to_email": "email_1@example.com, email_2@example.com",
+				"type": "html",
+				"subject": "Apache Response Time High"
+			},
+			"text": "<h2>Apache Response Time</h2> Average Respone Time is <strong>${(es.aggregations['1'].value).toFixed(2)}</strong> seconds."
+		}
+	]
 }
