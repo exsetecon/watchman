@@ -2,6 +2,7 @@
 const FS = require('fs');
 const PATH = require('path');
 const ES = require('elasticsearch');
+const md5 = require('md5');
 const CONFIG = require('./config.json');
 var ES_CLIENT = new ES.Client({
 	host: CONFIG.es_host ? CONFIG.es_host : "localhost:9200",
@@ -14,6 +15,17 @@ const DIR = {
 	ALERTS: PATH.join(__dirname, "alerts/"),
 };
 
+const CONSTANTS = {
+	RULE_TYPE: {
+		STATEFUL: "stateful",
+		STATELESS: "stateless"
+	},
+	ALERT_TYPE: {
+		START: "alert_start",
+		END: "alert_end"
+	}
+};
+
 // Load All Rules
 var rule_dirs = FS.readdirSync(DIR.RULES);
 var RULE_DATA = {};
@@ -21,6 +33,9 @@ var RULE_DATA = {};
 // Load All Alert APIs
 var alert_list = FS.readdirSync(DIR.ALERTS);
 var ALERT_API = {};
+
+// Trigger Switch
+var TRIGGER_SWITCH = {};
 
 if (alert_list.length > 0) {
 	alert_list.forEach(function(myalert){
@@ -87,41 +102,86 @@ var replaceParams = function(data){
 	return data;
 };
 
+var getUniqueAlertId = function(rule_name, alert_id) {
+	return md5(rule_name + (alert_id ? alert_id : ""));
+};
+
+var toggleTriggerSwitch = function(rule_name, alert_id) {
+	var unique_id = getUniqueAlertId(rule_name, alert_id);
+	if (TRIGGER_SWITCH.hasOwnProperty(unique_id) && TRIGGER_SWITCH[unique_id]) {
+		// Resolve Alert, i.e Clear
+		TRIGGER_SWITCH[unique_id] = false;
+	}
+};
+
 // Build ElasticSearch Response Variable Expression
 var makeSearchResponseExpr = function(expr) {
-	expr = expr.replace(/\$\{P\.([^\{\}]*)\}/gi, "rule_params.$1");
-	expr = expr.replace(/\$\{P\[([^\{\}]*)\]\}/gi, "rule_params[$1]");
-	expr = expr.replace(/\$\{tmp\.([^\{\}]*)\}/gi, "temp_data.$1");
-	expr = expr.replace(/\$\{tmp\[([^\{\}]*)\]\}/gi, "temp_data[$1]");
-	expr = expr.replace(/\$\{es\.([^\{\}]*)\}/gi, "es_response.$1");
-	expr = expr.replace(/\$\{es\[([^\{\}]*)\]\}/gi, "es_response[$1]");
+	expr = expr.replace(/\${ALERT_ID}/gmi, "alert_id");
+	expr = expr.replace(/\$\{P\.([^\{\}]*)\}/gmi, "rule_params.$1");
+	expr = expr.replace(/\$\{P\[([^\{\}]*)\]\}/gmi, "rule_params[$1]");
+	expr = expr.replace(/\$\{tmp\.([^\{\}]*)\}/gmi, "temp_data.$1");
+	expr = expr.replace(/\$\{tmp\[([^\{\}]*)\]\}/gmi, "temp_data[$1]");
+	expr = expr.replace(/\$\{es\.([^\{\}]*)\}/gmi, "es_response.$1");
+	expr = expr.replace(/\$\{es\[([^\{\}]*)\]\}/gmi, "es_response[$1]");
 	return expr;
 };
 
-var sendAlerts = function(rule_data, x, alert_config, alert_text){
-	ALERT_API[rule_data["alert"][x]["type"]].sendAlert(alert_config, alert_text, function(err){
+var sendAlerts = function(unique_alert_id, alert_type, rule_data, x, alert_config, alert_text){
+	ALERT_API[rule_data[alert_type][x]["type"]].sendAlert(alert_config, alert_text, function(err){
 		if (!err) {
-			console.log(">> "+rule_data["name"]+": Alert Sent via: "+rule_data["alert"][x]["type"]);
+			TRIGGER_SWITCH[unique_alert_id] = true;
+			console.log(">> "+rule_data["name"]+": Alert Sent via: "+rule_data[alert_type][x]["type"]);
 		} else {
-			console.log("## Error while sending Alert via "+rule_data["alert"][x]["type"]+": ", String(err));
+			console.log("## Error while sending Alert via "+rule_data[alert_type][x]["type"]+": ", String(err));
 		}
 	});
 };
 
 // Trigger Alert
-var triggerAlert = function(rule_data, result, temp_data, rule_params){
-	for (var x=0; x < rule_data["alert"].length; x++) {
-		if (ALERT_API.hasOwnProperty(rule_data["alert"][x]["type"])) {
-			var alert_text = renderAlertText(rule_data["alert"][x]["text"], result, temp_data, rule_params);
-			var alert_config = JSON.parse(renderAlertText(JSON.stringify(rule_data["alert"][x]["config"]), result, temp_data, rule_params));
-				sendAlerts(rule_data, x, alert_config, alert_text);
+var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_data, rule_params){
+	// Generate a Unique Hash of the Alert which will act as an ID for a specific Alert
+	var unique_alert_id = getUniqueAlertId(rule_data["dir_name"], alert_id);
+
+	var callAlert = function(alerts_list, type) {
+		for (var x=0; x < alerts_list.length; x++) {
+			if (ALERT_API.hasOwnProperty(alerts_list[x]["type"])) {
+				var alert_text = renderAlertText(alerts_list[x]["text"], result, temp_data, rule_params);
+				var alert_config = JSON.parse(renderAlertText(JSON.stringify(alerts_list[x]["config"]), result, temp_data, rule_params));
+				sendAlerts(unique_alert_id, type, rule_data, x, alert_config, alert_text);
+			}
+			else {
+				console.log("## Unknown Alert Start Type '"+alerts_list[x]["type"]+"'. Cannot send Alert!")
+			}
 		}
-		else {
-			console.log("## Unknown Alert Type '"+rule_data["alert"][x]["type"]+"'. Cannot send Alert!")
+	};
+	
+	// Trigger Condition satisfies ?
+	if (trigger_satisfy) {
+		if (TRIGGER_SWITCH[unique_alert_id] == false) {
+			// FALSE ---> TRUE
+			// Issue Started
+			console.log("## Issue Started...");
+			callAlert(rule_data["alert_start"], CONSTANTS.ALERT_TYPE.START);
+		} else {
+			// TRUE ---> TRUE
+			// Issue still ongoing
+			if (rule_data["type"] == CONSTANTS.RULE_TYPE.STATELESS) {
+				callAlert(rule_data["alert_start"], CONSTANTS.ALERT_TYPE.START);
+			}
+			console.log("## Issue still going...");
+		}
+	} else {
+		if (TRIGGER_SWITCH[unique_alert_id] == true) {
+			// TRUE ---> FALSE
+			// Issue Resolved
+			console.log("## Issue Resolved...");
+			callAlert(rule_data["alert_end"], CONSTANTS.ALERT_TYPE.END);
+		} else {
+			// FALSE ---> FALSE
+			// No Issue since the Last Trigger
+			console.log("## No Issue found...");
 		}
 	}
-	//console.log("! ! ! ALERT ! ! !");
-	//console.log("TRIGGER DATA: ", JSON.stringify(rule_data));
 };
 
 // Query Elastic
@@ -139,12 +199,14 @@ var addRuleTimer = function(rule_data){
 	var fun_success = function(es_response) {
 		//console.log("Got successfull Response from ES!", JSON.stringify(es_response));
 		// Try Parsing the Alert Expression on Data
-		var expr_val = false;
+		var alert_id = null;
+		var alert_id_array = [];
 		var temp_data = {};
 		var temp_data_array = [];
 		var rule_params = rule_data["config"]["params"] ? rule_data["config"]["params"] : {};
 		var i=0;
-		var array_type_matches = [];
+		var true_matches = [];
+		var false_matches = [];
 //		console.log("Expr parsed: ", rule_data["config"]["expr_parsed"]);
 		try {
 			// Check Expression for Array Values
@@ -152,14 +214,22 @@ var addRuleTimer = function(rule_data){
 				try {
 					while(true) {
 						//console.log("Value of i: "+i)
-						var new_expr = rule_data["config"]["expr_parsed"].replace(/\[i\]/gi, "["+i+"]");
+						var new_expr = rule_data["config"]["expr_parsed"].replace(/\[i\]/gmi, "["+i+"]");
 						//console.log("Check Expr: ", new_expr);
-						if (eval(new_expr)) {
-							temp_data_array.push(temp_data);
-							temp_data = {};
-							array_type_matches.push(i);
-							//console.log("Setting expr_loop as ", expr_loop_i);
-							expr_val = true;
+						var result = eval(new_expr);
+						var unique_alert_id = getUniqueAlertId(rule_data["config"]["dir_name"], alert_id);
+						// Set Switch as FALSE by default
+						if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
+							TRIGGER_SWITCH[unique_alert_id] = false;
+						}
+						alert_id_array.push(alert_id);
+						alert_id = null;
+						temp_data_array[i] = temp_data;
+						temp_data = {};
+						if (result) {
+							true_matches.push(i);
+						} else {
+							false_matches.push(i);
 						}
 						i++;
 					}
@@ -169,33 +239,42 @@ var addRuleTimer = function(rule_data){
 					//console.log("while loop breaks on i="+i);
 				}
 			}
-			else {
-				expr_val = eval(rule_data["config"]["expr_parsed"]);
-			}
-			if(expr_val) {
-				// Recursively call Rule again and again after an Interval of Time
-				addRuleTimer(rule_data);
-				// If there is a Loop in Expression
-				if (array_type_matches.length > 0) {
-					console.log(">> Result: "+rule_data["config"]["name"]+": "+array_type_matches.length+" Matches.");
-					array_type_matches.forEach(function(i_pos){
-						//console.log("Value of i: "+i_pos)
-						var tmp_rule_config = JSON.parse(JSON.stringify(rule_data["config"]));
-						for (var z=0; z < tmp_rule_config["alert"].length; z++) {
-							tmp_rule_config["alert"][z]["text"] = tmp_rule_config["alert"][z]["text"].replace(/\[i\]/gi, "["+i_pos+"]");
-						}
-						triggerAlert(tmp_rule_config, es_response, temp_data_array[i_pos], rule_params);
-					});
+
+			// Array based Rules
+			if (true_matches.length > 0 || false_matches.length > 0) {
+				// Trigger Satisfying Alerts
+				true_matches.forEach(function(i_pos){
+					var tmp_rule_config = JSON.parse(JSON.stringify(rule_data["config"]));
+					for (var z=0; z < tmp_rule_config["alert_start"].length; z++) {
+						tmp_rule_config["alert_start"][z]["text"] = tmp_rule_config["alert_start"][z]["text"].replace(/\[i\]/gmi, "["+i_pos+"]");
+					}
+					triggerAlert(true, alert_id_array[i_pos], tmp_rule_config, es_response, temp_data_array[i_pos], rule_params);
+				});
+				// Trigger Non-Satisfying Alerts
+				false_matches.forEach(function(i_pos){
+					var tmp_rule_config = JSON.parse(JSON.stringify(rule_data["config"]));
+					for (var z=0; z < tmp_rule_config["alert_end"].length; z++) {
+						tmp_rule_config["alert_end"][z]["text"] = tmp_rule_config["alert_end"][z]["text"].replace(/\[i\]/gmi, "["+i_pos+"]");
+					}
+					triggerAlert(false, alert_id_array[i_pos], tmp_rule_config, es_response, temp_data_array[i_pos], rule_params);
+				});
+			} else {
+				// Non-Array based Rules
+				rule_result = eval(rule_data["config"]["expr_parsed"]);
+				var unique_alert_id = getUniqueAlertId(rule_data["dir_name"], alert_id);
+				// Set Switch as FALSE by default
+				if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
+					TRIGGER_SWITCH[unique_alert_id] = false;
 				}
-				else {
-					console.log(">> Result: "+rule_data["config"]["name"]+": 1 Match.");
-					triggerAlert(rule_data["config"], es_response, temp_data, rule_params);
+				if (rule_result) {
+					triggerAlert(true, alert_id, rule_data["config"], es_response, temp_data, rule_params);
+				} else {
+					triggerAlert(false, alert_id, rule_data["config"], es_response, temp_data, rule_params);
 				}
 			}
-			else {
-				console.log(">> Result: "+rule_data["config"]["name"]+": No Matches! No Alert!");
-				addRuleTimer(rule_data);
-			}
+
+			// Recursively call Rule again and again after an Interval of Time
+			addRuleTimer(rule_data);
 			console.log(">> "+rule_data["config"]["name"]+": Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
 		}
 		catch(alert_expr_err) {
@@ -231,7 +310,14 @@ if (rule_dirs.length > 0) {
 				// All Rule Files there... Proceed..
 				var config_data = FS.readFileSync(PATH.join(DIR.RULES, rule_d, "config.json"), "utf8");
 				var query_data = FS.readFileSync(PATH.join(DIR.RULES, rule_d, "query.json"), "utf8");
+				var expr_data = FS.readFileSync(PATH.join(DIR.RULES, rule_d, "expression.js"), "utf8");
 				RULE_DATA[rule_d]["config"] = JSON.parse(config_data);
+				// Default Rule Type
+				if (!RULE_DATA[rule_d]["config"]["type"] || ([CONSTANTS.RULE_TYPE.STATELESS, CONSTANTS.RULE_TYPE.STATEFUL].indexOf(RULE_DATA[rule_d]["config"]["type"]) == -1)) {
+					RULE_DATA[rule_d]["config"]["type"] = CONSTANTS.RULE_TYPE.STATELESS;
+				}
+				RULE_DATA[rule_d]["config"]["dir_name"] = rule_d;
+				RULE_DATA[rule_d]["config"]["expr"] = expr_data;
 				RULE_DATA[rule_d]["query"] = query_data;
 			}
 			else {
@@ -248,13 +334,13 @@ if (rule_dirs.length > 0) {
 	// Start Querying for all Rules
 	for (var rule in RULE_DATA) {
 		if (RULE_DATA.hasOwnProperty(rule)) {
-			for (var k=0; k < RULE_DATA[rule]["config"]["alert"].length; k++) {
-				if (ALERT_API.hasOwnProperty(RULE_DATA[rule]["config"]["alert"][k]["type"])) {
+			for (var k=0; k < RULE_DATA[rule]["config"]["alert_start"].length; k++) {
+				if (ALERT_API.hasOwnProperty(RULE_DATA[rule]["config"]["alert_start"][k]["type"])) {
 					// Check for Required Fields
 					var req_fields_provided = true;
-					if (ALERT_API[RULE_DATA[rule]["config"]["alert"][k]["type"]].required && typeof ALERT_API[RULE_DATA[rule]["config"]["alert"][k]["type"]].required == "object") {
-						ALERT_API[RULE_DATA[rule]["config"]["alert"][k]["type"]].required.forEach(function(field){
-							if (!RULE_DATA[rule]["config"]["alert"][k]["config"].hasOwnProperty(field) || !RULE_DATA[rule]["config"]["alert"][k]["config"][field]) {
+					if (ALERT_API[RULE_DATA[rule]["config"]["alert_start"][k]["type"]].required && typeof ALERT_API[RULE_DATA[rule]["config"]["alert_start"][k]["type"]].required == "object") {
+						ALERT_API[RULE_DATA[rule]["config"]["alert_start"][k]["type"]].required.forEach(function(field){
+							if (!RULE_DATA[rule]["config"]["alert_start"][k]["config"].hasOwnProperty(field) || !RULE_DATA[rule]["config"]["alert_start"][k]["config"][field]) {
 								req_fields_provided = false;
 								console.log("## Field '"+field+"' missing from '"+RULE_DATA[rule]["config"]["name"]+"' Config.")
 							}
@@ -263,15 +349,38 @@ if (rule_dirs.length > 0) {
 
 					if (!req_fields_provided) {
 						// Remove that specific Alert from List
-						console.log(">> Removing Alert Type '"+RULE_DATA[rule]["config"]["alert"][k]["type"]+"' due to incorrect configuration.")
-						RULE_DATA[rule]["config"]["alert"].splice(k,1);
+						console.log(">> Removing Alert Type '"+RULE_DATA[rule]["config"]["alert_start"][k]["type"]+"' due to incorrect configuration.")
+						RULE_DATA[rule]["config"]["alert_start"].splice(k,1);
 					}
 				}
 				else {
-					console.log("## Alert Type '"+RULE_DATA[rule]["config"]["alert"][k]["type"]+"' not found!");
+					console.log("## Alert Type '"+RULE_DATA[rule]["config"]["alert_start"][k]["type"]+"' not found!");
 				}
 			}
-			if (RULE_DATA[rule]["config"]["alert"].length > 0) {
+			for (var k=0; k < RULE_DATA[rule]["config"]["alert_end"].length; k++) {
+				if (ALERT_API.hasOwnProperty(RULE_DATA[rule]["config"]["alert_end"][k]["type"])) {
+					// Check for Required Fields
+					var req_fields_provided = true;
+					if (ALERT_API[RULE_DATA[rule]["config"]["alert_end"][k]["type"]].required && typeof ALERT_API[RULE_DATA[rule]["config"]["alert_end"][k]["type"]].required == "object") {
+						ALERT_API[RULE_DATA[rule]["config"]["alert_end"][k]["type"]].required.forEach(function(field){
+							if (!RULE_DATA[rule]["config"]["alert_end"][k]["config"].hasOwnProperty(field) || !RULE_DATA[rule]["config"]["alert_end"][k]["config"][field]) {
+								req_fields_provided = false;
+								console.log("## Field '"+field+"' missing from '"+RULE_DATA[rule]["config"]["name"]+"' Config.")
+							}
+						});
+					}
+
+					if (!req_fields_provided) {
+						// Remove that specific Alert from List
+						console.log(">> Removing Alert Type '"+RULE_DATA[rule]["config"]["alert_end"][k]["type"]+"' due to incorrect configuration.")
+						RULE_DATA[rule]["config"]["alert_end"].splice(k,1);
+					}
+				}
+				else {
+					console.log("## Alert Type '"+RULE_DATA[rule]["config"]["alert_end"][k]["type"]+"' not found!");
+				}
+			}
+			if (RULE_DATA[rule]["config"]["alert_start"].length > 0 || RULE_DATA[rule]["config"]["alert_end"].length > 0) {
 				console.log("*** Adding Rule: " + RULE_DATA[rule]["config"]["name"]);
 				// Make Alert Expression
 				RULE_DATA[rule]["config"]["expr_parsed"] = makeSearchResponseExpr(RULE_DATA[rule]["config"]["expr"]);
