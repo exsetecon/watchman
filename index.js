@@ -37,6 +37,9 @@ var ALERT_API = {};
 // Trigger Switch
 var TRIGGER_SWITCH = {};
 
+// Polling Counter
+var POLL_COUNTER = {};
+
 if (alert_list.length > 0) {
 	alert_list.forEach(function(myalert){
 		var alert_file = PATH.join(DIR.ALERTS, myalert);
@@ -106,14 +109,6 @@ var getUniqueAlertId = function(rule_name, alert_id) {
 	return md5(rule_name + (alert_id ? alert_id : ""));
 };
 
-var toggleTriggerSwitch = function(rule_name, alert_id) {
-	var unique_id = getUniqueAlertId(rule_name, alert_id);
-	if (TRIGGER_SWITCH.hasOwnProperty(unique_id) && TRIGGER_SWITCH[unique_id]) {
-		// Resolve Alert, i.e Clear
-		TRIGGER_SWITCH[unique_id] = false;
-	}
-};
-
 // Build ElasticSearch Response Variable Expression
 var makeSearchResponseExpr = function(expr) {
 	expr = expr.replace(/\${ALERT_ID}/gmi, "alert_id");
@@ -129,7 +124,11 @@ var makeSearchResponseExpr = function(expr) {
 var sendAlerts = function(unique_alert_id, alert_type, rule_data, x, alert_config, alert_text){
 	ALERT_API[rule_data[alert_type][x]["type"]].sendAlert(alert_config, alert_text, function(err){
 		if (!err) {
-			TRIGGER_SWITCH[unique_alert_id] = true;
+			if (alert_type == CONSTANTS.ALERT_TYPE.START) {
+				TRIGGER_SWITCH[unique_alert_id] = true;
+			} else {
+				TRIGGER_SWITCH[unique_alert_id] = false;
+			}
 			console.log(">> "+rule_data["name"]+": Alert Sent via: "+rule_data[alert_type][x]["type"]);
 		} else {
 			console.log("## Error while sending Alert via "+rule_data[alert_type][x]["type"]+": ", String(err));
@@ -158,28 +157,56 @@ var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_d
 	// Trigger Condition satisfies ?
 	if (trigger_satisfy) {
 		if (TRIGGER_SWITCH[unique_alert_id] == false) {
-			// FALSE ---> TRUE
-			// Issue Started
-			console.log("## Issue Started...");
-			callAlert(rule_data["alert_start"], CONSTANTS.ALERT_TYPE.START);
-		} else {
-			// TRUE ---> TRUE
-			// Issue still ongoing
-			if (rule_data["type"] == CONSTANTS.RULE_TYPE.STATELESS) {
+			if (POLL_COUNTER[unique_alert_id].up >= rule_data["poll_count"]-1) {
+				// FALSE ---> TRUE
+				// Issue Started
+				console.log("## Issue Started...");
 				callAlert(rule_data["alert_start"], CONSTANTS.ALERT_TYPE.START);
+				POLL_COUNTER[unique_alert_id].down = 0;
+				// Reset the Counter in case of Stateless Rule
+				if (rule_data["type"] == CONSTANTS.RULE_TYPE.STATELESS) {
+					POLL_COUNTER[unique_alert_id].up = 0;
+				}
+			} else {
+				// Incrementing the Poll Counter
+				console.log("## Issue Started Count is "+POLL_COUNTER[unique_alert_id].up+". Incrementing...");
+				POLL_COUNTER[unique_alert_id].up++;
 			}
+		} else {
+			if (rule_data["type"] == CONSTANTS.RULE_TYPE.STATELESS) {
+				if (POLL_COUNTER[unique_alert_id].up >= rule_data["poll_count"]-1) {
+					// TRUE ---> TRUE
+					// Issue still ongoing
+					callAlert(rule_data["alert_start"], CONSTANTS.ALERT_TYPE.START);
+					// Reset Poll Counter
+					POLL_COUNTER[unique_alert_id].up = 0;
+				} else {
+					// Incrementing the Poll Counter
+					console.log("## Issue Started Count is "+POLL_COUNTER[unique_alert_id].up+". Incrementing...");
+					POLL_COUNTER[unique_alert_id].up++;
+				}
+			}
+			POLL_COUNTER[unique_alert_id].down = 0;
 			console.log("## Issue still going...");
 		}
 	} else {
 		if (TRIGGER_SWITCH[unique_alert_id] == true) {
-			// TRUE ---> FALSE
-			// Issue Resolved
-			console.log("## Issue Resolved...");
-			callAlert(rule_data["alert_end"], CONSTANTS.ALERT_TYPE.END);
+			if (POLL_COUNTER[unique_alert_id].down >= rule_data["poll_count"]-1) {
+				// TRUE ---> FALSE
+				// Issue Resolved
+				console.log("## Issue Resolved...");
+				callAlert(rule_data["alert_end"], CONSTANTS.ALERT_TYPE.END);
+				POLL_COUNTER[unique_alert_id].up = 0;
+			} else {
+				// Incrementing the Poll Counter
+				console.log("## Issue Resolved Count is "+POLL_COUNTER[unique_alert_id].down+". Incrementing...");
+				POLL_COUNTER[unique_alert_id].down++;
+			}
 		} else {
 			// FALSE ---> FALSE
 			// No Issue since the Last Trigger
-			console.log("## No Issue found...");
+			//console.log("## No Issue found...");
+			POLL_COUNTER[unique_alert_id].up = 0;
 		}
 	}
 };
@@ -222,20 +249,28 @@ var addRuleTimer = function(rule_data){
 						if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
 							TRIGGER_SWITCH[unique_alert_id] = false;
 						}
+						// Initialize Polling Counters to 0 by default
+						if (!POLL_COUNTER.hasOwnProperty(unique_alert_id)) {
+							POLL_COUNTER[unique_alert_id] = {	up: 0, down: 0	};
+						}
 						alert_id_array.push(alert_id);
 						alert_id = null;
 						temp_data_array[i] = temp_data;
 						temp_data = {};
 						if (result) {
 							true_matches.push(i);
-						} else {
+						} else if (result == false) {
 							false_matches.push(i);
+						} else {
+							console.log("!! Got Undefined Result from evaluating Expression for Rule: "+rule_data["config"]["name"]);
+							break;
 						}
 						i++;
 					}
 				}
 				catch(err) {
 					// Nothing here
+					console.log("## Catching While Loop Error: ", String(err));
 					//console.log("while loop breaks on i="+i);
 				}
 			}
@@ -258,13 +293,17 @@ var addRuleTimer = function(rule_data){
 					}
 					triggerAlert(false, alert_id_array[i_pos], tmp_rule_config, es_response, temp_data_array[i_pos], rule_params);
 				});
-			} else {
+			} else if (rule_data["config"]["expr_parsed"].indexOf("[i]") == -1) {
 				// Non-Array based Rules
 				rule_result = eval(rule_data["config"]["expr_parsed"]);
-				var unique_alert_id = getUniqueAlertId(rule_data["dir_name"], alert_id);
+				var unique_alert_id = getUniqueAlertId(rule_data["config"]["dir_name"], alert_id);
 				// Set Switch as FALSE by default
 				if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
 					TRIGGER_SWITCH[unique_alert_id] = false;
+				}
+				// Initialize Polling Counters to 0 by default
+				if (!POLL_COUNTER.hasOwnProperty(unique_alert_id)) {
+					POLL_COUNTER[unique_alert_id] = {	up: 0, down: 0	};
 				}
 				if (rule_result) {
 					triggerAlert(true, alert_id, rule_data["config"], es_response, temp_data, rule_params);
@@ -317,6 +356,10 @@ if (rule_dirs.length > 0) {
 					RULE_DATA[rule_d]["config"]["type"] = CONSTANTS.RULE_TYPE.STATELESS;
 				}
 				RULE_DATA[rule_d]["config"]["dir_name"] = rule_d;
+				// Poll Counter will initialize to 0 if not already defined
+				if (!RULE_DATA[rule_d]["config"]["poll_count"]) {
+					RULE_DATA[rule_d]["config"]["poll_count"] = 0;
+				}
 				RULE_DATA[rule_d]["config"]["expr"] = expr_data;
 				RULE_DATA[rule_d]["query"] = query_data;
 			}

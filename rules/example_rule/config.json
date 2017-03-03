@@ -3,6 +3,7 @@
 	"run_every": 45,
 	"index": "logstash-apache-*",
 	"type": "stateless",
+	"poll_count": 1,
 	"alert_start": [
 		{
 			"type": "telegram",
