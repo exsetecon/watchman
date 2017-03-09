@@ -3,17 +3,23 @@ const FS = require('fs');
 const PATH = require('path');
 const ES = require('elasticsearch');
 const md5 = require('md5');
-const CONFIG = require('./config.json');
+
+// Default Locations
+const DIR = {
+	ROOT: PATH.join(__dirname),
+	RULES: PATH.join(__dirname, "rules/"),
+	ALERTS: PATH.join(__dirname, "alerts/")
+};
+const FILES = {
+	CONFIG: PATH.join(DIR.ROOT, "config.json"),
+	TRIGGER_SWITCH: PATH.join(DIR.ROOT, "trigger_switch_state.json")
+};
+
+const CONFIG = require(FILES.CONFIG);
 var ES_CLIENT = new ES.Client({
 	host: CONFIG.es_host ? CONFIG.es_host : "localhost:9200",
 	log: CONFIG.es_log_level ? CONFIG.es_log_level : "info"
 });
-
-// Default Locations
-const DIR = {
-	RULES: PATH.join(__dirname, "rules/"),
-	ALERTS: PATH.join(__dirname, "alerts/"),
-};
 
 const CONSTANTS = {
 	RULE_TYPE: {
@@ -39,6 +45,23 @@ var TRIGGER_SWITCH = {};
 
 // Polling Counter
 var POLL_COUNTER = {};
+
+// Load Previous Trigger Switches States from File
+try {
+	if (FS.statSync(FILES.TRIGGER_SWITCH).isFile()) {
+		TRIGGER_SWITCH = require(FILES.TRIGGER_SWITCH);
+		if (typeof TRIGGER_SWITCH != "object" || Object.keys(TRIGGER_SWITCH).length == 0) {
+			TRIGGER_SWITCH = {};
+		}
+	}
+} catch(err) {
+	console.log("## Error while loading previous Trigger Switch State: " + String(err));
+}
+
+// Function to Save Trigger Switches State in a File on Disk
+var saveTriggers = function(){
+	FS.writeFileSync(FILES.TRIGGER_SWITCH, JSON.stringify(TRIGGER_SWITCH));
+};
 
 if (alert_list.length > 0) {
 	alert_list.forEach(function(myalert){
@@ -122,18 +145,33 @@ var makeSearchResponseExpr = function(expr) {
 };
 
 var sendAlerts = function(unique_alert_id, alert_type, rule_data, x, alert_config, alert_text){
-	ALERT_API[rule_data[alert_type][x]["type"]].sendAlert(alert_config, alert_text, function(err){
-		if (!err) {
-			if (alert_type == CONSTANTS.ALERT_TYPE.START) {
-				TRIGGER_SWITCH[unique_alert_id] = true;
+	var retry_count = 0;
+
+	if (alert_type == CONSTANTS.ALERT_TYPE.START) {
+		TRIGGER_SWITCH[unique_alert_id] = true;
+	} else {
+		TRIGGER_SWITCH[unique_alert_id] = false;
+	}
+	// Save Trigger State into File on Disk
+	saveTriggers();
+
+	var sendNow = function(){
+		ALERT_API[rule_data[alert_type][x]["type"]].sendAlert(alert_config, alert_text, function(err){
+			if (!err) {
+				console.log(">> "+rule_data["name"]+": Alert Sent via: "+rule_data[alert_type][x]["type"]);
 			} else {
-				TRIGGER_SWITCH[unique_alert_id] = false;
+				console.log("## Error while sending Alert via "+rule_data[alert_type][x]["type"]+": ", String(err));
+				if (retry_count < 2) {
+					retry_count++;
+					console.log("## Retrying Sending Alert via "+rule_data[alert_type][x]["type"]);
+					sendNow();
+				} else {
+					console.log("## Failed Sending Alert via "+rule_data[alert_type][x]["type"]);
+				}
 			}
-			console.log(">> "+rule_data["name"]+": Alert Sent via: "+rule_data[alert_type][x]["type"]);
-		} else {
-			console.log("## Error while sending Alert via "+rule_data[alert_type][x]["type"]+": ", String(err));
-		}
-	});
+		});
+	};
+	sendNow();
 };
 
 // Trigger Alert
@@ -240,9 +278,7 @@ var addRuleTimer = function(rule_data){
 			if (rule_data["config"]["expr_parsed"].indexOf("[i]") != -1) {
 				try {
 					while(true) {
-						//console.log("Value of i: "+i)
 						var new_expr = rule_data["config"]["expr_parsed"].replace(/\[i\]/gmi, "["+i+"]");
-						//console.log("Check Expr: ", new_expr);
 						var result = eval(new_expr);
 						var unique_alert_id = getUniqueAlertId(rule_data["config"]["dir_name"], alert_id);
 						// Set Switch as FALSE by default
@@ -261,6 +297,8 @@ var addRuleTimer = function(rule_data){
 							true_matches.push(i);
 						} else if (result == false) {
 							false_matches.push(i);
+						} else if (result == null) {
+							// Continue
 						} else {
 							console.log("!! Got Undefined Result from evaluating Expression for Rule: "+rule_data["config"]["name"]);
 							break;
@@ -270,7 +308,7 @@ var addRuleTimer = function(rule_data){
 				}
 				catch(err) {
 					// Nothing here
-					console.log("## Catching While Loop Error: ", String(err));
+					console.log("Catching Error: ", String(err));
 					//console.log("while loop breaks on i="+i);
 				}
 			}
