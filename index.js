@@ -3,6 +3,7 @@ const FS = require('fs');
 const PATH = require('path');
 const ES = require('elasticsearch');
 const md5 = require('md5');
+var scheduler = require('node-schedule');
 
 // Default Locations
 const DIR = {
@@ -152,8 +153,6 @@ var sendAlerts = function(unique_alert_id, alert_type, rule_data, x, alert_confi
 	} else {
 		TRIGGER_SWITCH[unique_alert_id] = false;
 	}
-	// Save Trigger State into File on Disk
-	saveTriggers();
 
 	var sendNow = function(){
 		ALERT_API[rule_data[alert_type][x]["type"]].sendAlert(alert_config, alert_text, function(err){
@@ -190,6 +189,8 @@ var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_d
 				console.log("## Unknown Alert Start Type '"+alerts_list[x]["type"]+"'. Cannot send Alert!")
 			}
 		}
+		// Save Trigger State into File on Disk
+		saveTriggers();
 	};
 	
 	// Trigger Condition satisfies ?
@@ -259,7 +260,7 @@ var doSearch = function(index, query, success_callback, error_callback){
 
 // Add Rule to Query after specific Intervals of Time
 var addRuleTimer = function(rule_data){
-	var time_delay_ms = rule_data["config"]["run_every"] * 1000;
+	//var time_delay_ms = rule_data["config"]["run_every"] * 1000;
 
 	var fun_success = function(es_response) {
 		//console.log("Got successfull Response from ES!", JSON.stringify(es_response));
@@ -351,8 +352,8 @@ var addRuleTimer = function(rule_data){
 			}
 
 			// Recursively call Rule again and again after an Interval of Time
-			addRuleTimer(rule_data);
-			console.log(">> "+rule_data["config"]["name"]+": Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
+			//addRuleTimer(rule_data);
+			//console.log(">> "+rule_data["config"]["name"]+": Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
 		}
 		catch(alert_expr_err) {
 			console.log("## Cannot Parse Alert Expression", alert_expr_err);
@@ -361,10 +362,17 @@ var addRuleTimer = function(rule_data){
 	var fun_error = function (err) {
 		console.trace("## ElasticSearch Error: ", err.message);
 		// Recursively call Rule again and again after an Interval of Time
-		addRuleTimer(rule_data);
-		console.log(">> Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
+		//addRuleTimer(rule_data);
+		//console.log(">> Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
 	};
 
+	// Add to Scheduler
+	var j = scheduler.scheduleJob(rule_data["config"]["run_time"], function(){
+		console.log(">> Querying Rule: " + rule_data["config"]["name"]);
+		var es_query = JSON.parse(replaceParams(rule_data["query"]));
+		doSearch(rule_data["config"]["index"], es_query, fun_success, fun_error);
+	});
+/*
 	setTimeout(function(){
 		console.log(">> Querying Rule: " + rule_data["config"]["name"]);
 		//console.log(">> Index : " + rule_data["config"]["index"]);
@@ -372,6 +380,7 @@ var addRuleTimer = function(rule_data){
 		var es_query = JSON.parse(replaceParams(rule_data["query"]));
 		doSearch(rule_data["config"]["index"], es_query, fun_success, fun_error);
 	}, time_delay_ms);
+*/
 };
 
 // Main
@@ -467,7 +476,7 @@ if (rule_dirs.length > 0) {
 				RULE_DATA[rule]["config"]["expr_parsed"] = makeSearchResponseExpr(RULE_DATA[rule]["config"]["expr"]);
 				// Add Rule
 				addRuleTimer(RULE_DATA[rule]);
-				console.log(">> Sleeping for " + RULE_DATA[rule]["config"]["run_every"] + " seconds...");
+				//console.log(">> Sleeping for " + RULE_DATA[rule]["config"]["run_every"] + " seconds...");
 			} else {
 				// There are No Alert Type to Add
 				console.log("## No Valid Alerts are set for '"+RULE_DATA[rule]["config"]["name"]+"'. Thus, ignoring this Rule!");

@@ -1,6 +1,6 @@
 {
 	"name": "Average of Response Time",
-	"run_every": 45,
+	"run_time": "*/20 * * * * *",
 	"index": "logstash-apache-*",
 	"type": "stateless",
 	"poll_count": 1,
