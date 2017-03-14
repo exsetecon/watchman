@@ -3,7 +3,7 @@ const FS = require('fs');
 const PATH = require('path');
 const ES = require('elasticsearch');
 const md5 = require('md5');
-var scheduler = require('node-schedule');
+var scheduler = require('node-cron');
 
 // Default Locations
 const DIR = {
@@ -259,8 +259,7 @@ var doSearch = function(index, query, success_callback, error_callback){
 };
 
 // Add Rule to Query after specific Intervals of Time
-var addRuleTimer = function(rule_data){
-	//var time_delay_ms = rule_data["config"]["run_every"] * 1000;
+var addRuleTimer = function(rule_data, schedule_time){
 
 	var fun_success = function(es_response) {
 		//console.log("Got successfull Response from ES!", JSON.stringify(es_response));
@@ -351,9 +350,6 @@ var addRuleTimer = function(rule_data){
 				}
 			}
 
-			// Recursively call Rule again and again after an Interval of Time
-			//addRuleTimer(rule_data);
-			//console.log(">> "+rule_data["config"]["name"]+": Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
 		}
 		catch(alert_expr_err) {
 			console.log("## Cannot Parse Alert Expression", alert_expr_err);
@@ -361,26 +357,14 @@ var addRuleTimer = function(rule_data){
 	};
 	var fun_error = function (err) {
 		console.trace("## ElasticSearch Error: ", err.message);
-		// Recursively call Rule again and again after an Interval of Time
-		//addRuleTimer(rule_data);
-		//console.log(">> Sleeping for " + rule_data["config"]["run_every"] + " seconds...");
 	};
 
 	// Add to Scheduler
-	var j = scheduler.scheduleJob(rule_data["config"]["run_time"], function(){
+	scheduler.schedule(schedule_time, function(){
 		console.log(">> Querying Rule: " + rule_data["config"]["name"]);
 		var es_query = JSON.parse(replaceParams(rule_data["query"]));
 		doSearch(rule_data["config"]["index"], es_query, fun_success, fun_error);
 	});
-/*
-	setTimeout(function(){
-		console.log(">> Querying Rule: " + rule_data["config"]["name"]);
-		//console.log(">> Index : " + rule_data["config"]["index"]);
-		//console.log("ES Query: ", JSON.stringify(rule_data["query"]));
-		var es_query = JSON.parse(replaceParams(rule_data["query"]));
-		doSearch(rule_data["config"]["index"], es_query, fun_success, fun_error);
-	}, time_delay_ms);
-*/
 };
 
 // Main
@@ -475,8 +459,14 @@ if (rule_dirs.length > 0) {
 				// Make Alert Expression
 				RULE_DATA[rule]["config"]["expr_parsed"] = makeSearchResponseExpr(RULE_DATA[rule]["config"]["expr"]);
 				// Add Rule
-				addRuleTimer(RULE_DATA[rule]);
-				//console.log(">> Sleeping for " + RULE_DATA[rule]["config"]["run_every"] + " seconds...");
+				if (typeof RULE_DATA[rule]["config"]["run_time"] == "string") {
+					addRuleTimer(RULE_DATA[rule], RULE_DATA[rule]["config"]["run_time"]);
+				} else if (typeof RULE_DATA[rule]["config"]["run_time"] == "object") {
+					// For each Scheduled Cron, add the Rule
+					RULE_DATA[rule]["config"]["run_time"].forEach(function(run_time) {
+						addRuleTimer(RULE_DATA[rule], run_time);
+					});
+				}
 			} else {
 				// There are No Alert Type to Add
 				console.log("## No Valid Alerts are set for '"+RULE_DATA[rule]["config"]["name"]+"'. Thus, ignoring this Rule!");
