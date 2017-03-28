@@ -11,7 +11,7 @@
 				"bot_token": "<INSERT_BOT_TOKEN_HERE>",
 				"room_id": "<INSERT_CHAT_ID_HERE>"
 			},
-			"text": "*Issue Started*\n\nAverage Respone Time is ${(es.aggregations['1'].value).toFixed(2)} seconds."
+			"text": "*Issue Started*\n\nAverage Respone Time on ${tmp.server_ip} is ${tmp.response_time} seconds."
 		},
 		{
 			"type": "email",
@@ -24,7 +24,7 @@
 				"type": "html",
 				"subject": "Apache Issue Started"
 			},
-			"text": "<h2>Apache Response Time</h2> Average Respone Time is <strong>${(es.aggregations['1'].value).toFixed(2)}</strong> seconds."
+			"text": "<h2>Apache Response Time</h2> Average Respone Time on ${tmp.server_ip} is <strong>${tmp.response_time}</strong> seconds."
 		}
 	],
 	"alert_end": [
@@ -34,7 +34,7 @@
 				"bot_token": "<INSERT_BOT_TOKEN_HERE>",
 				"room_id": "<INSERT_CHAT_ID_HERE>"
 			},
-			"text": "*Issue Resolved*\n\nAverage Respone Time is ${(es.aggregations['1'].value).toFixed(2)} seconds."
+			"text": "*Issue Resolved*\n\nAverage Respone Time on ${tmp.server_ip} is ${tmp.response_time} seconds."
 		},
 		{
 			"type": "email",
@@ -47,7 +47,7 @@
 				"type": "html",
 				"subject": "Apache Issue Resolved"
 			},
-			"text": "<h2>Apache Response Time</h2> Average Respone Time is <strong>${(es.aggregations['1'].value).toFixed(2)}</strong> seconds."
+			"text": "<h2>Apache Response Time</h2> Average Respone Time on ${tmp.server_ip} is <strong>${tmp.response_time}</strong> seconds."
 		}
 	]
 }

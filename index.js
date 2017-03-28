@@ -117,10 +117,10 @@ var replaceParams = function(data){
 	if (matches) {
 		matches.forEach(function(match){
 			// Replace Friendly Time values
-			match_val = match.replace(/([0-9]+)seconds?/gmi, "$1*1000");				// 1 sec = 1000ms
+			match_val = match.replace(/([0-9]+)seconds?/gmi, "$1*1000");			    // 1 sec = 1000ms
 			match_val = match_val.replace(/([0-9]+)minutes?/gmi, "$1*60*1000"); // 1 minute = 60sec x 1000ms
-			match_val = match_val.replace(/([0-9]+)hours?/gmi, "$1*60*60*1000");		// 1 hour = 60min x 60sec x 1000ms
-			match_val = match_val.replace(/([0-9]+)days?/gmi, "$1*24*60*60*1000");	  // 1 day = 24hour x 60min x 60sec x 1000ms
+			match_val = match_val.replace(/([0-9]+)hours?/gmi, "$1*60*60*1000");	    // 1 hour = 60min x 60sec x 1000ms
+			match_val = match_val.replace(/([0-9]+)days?/gmi, "$1*24*60*60*1000");    // 1 day = 24hour x 60min x 60sec x 1000ms
 			var param_val = eval(match_val.replace(/\$\{([^\}]*)\}/gmi, "$1"));
 			data = data.replace(match, param_val);
 		});
@@ -136,6 +136,8 @@ var getUniqueAlertId = function(rule_name, alert_id) {
 // Build ElasticSearch Response Variable Expression
 var makeSearchResponseExpr = function(expr) {
 	expr = expr.replace(/\${ALERT_ID}/gmi, "alert_id");
+	expr = expr.replace(/alertUp\( *\)/gmi, "alertUp(alert_id,temp_data)");
+	expr = expr.replace(/alertDown\( *\)/gmi, "alertDown(alert_id,temp_data)");
 	expr = expr.replace(/\$\{P\.([^\{\}]*)\}/gmi, "rule_params.$1");
 	expr = expr.replace(/\$\{P\[([^\{\}]*)\]\}/gmi, "rule_params[$1]");
 	expr = expr.replace(/\$\{tmp\.([^\{\}]*)\}/gmi, "temp_data.$1");
@@ -192,7 +194,7 @@ var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_d
 		// Save Trigger State into File on Disk
 		saveTriggers();
 	};
-	
+
 	// Trigger Condition satisfies ?
 	if (trigger_satisfy) {
 		if (TRIGGER_SWITCH[unique_alert_id] == false) {
@@ -260,7 +262,6 @@ var doSearch = function(index, query, success_callback, error_callback){
 
 // Add Rule to Query after specific Intervals of Time
 var addRuleTimer = function(rule_data, schedule_time){
-
 	var fun_success = function(es_response) {
 		//console.log("Got successfull Response from ES!", JSON.stringify(es_response));
 		// Try Parsing the Alert Expression on Data
@@ -269,87 +270,74 @@ var addRuleTimer = function(rule_data, schedule_time){
 		var temp_data = {};
 		var temp_data_array = [];
 		var rule_params = rule_data["config"]["params"] ? rule_data["config"]["params"] : {};
-		var i=0;
+		var alert_count=0;
 		var true_matches = [];
 		var false_matches = [];
-//		console.log("Expr parsed: ", rule_data["config"]["expr_parsed"]);
+
+		var initAlertId = function(alert_id){
+			var unique_alert_id = getUniqueAlertId(rule_data["config"]["dir_name"], alert_id);
+			// Set Switch as FALSE by default
+			if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
+				TRIGGER_SWITCH[unique_alert_id] = false;
+			}
+			// Initialize Polling Counters to 0 by default
+			if (!POLL_COUNTER.hasOwnProperty(unique_alert_id)) {
+				POLL_COUNTER[unique_alert_id] = {       up: 0, down: 0  };
+			}
+		};
+		var alertUp = function(al_id, tmp){
+if (alert_count >= 100) {
+	console.log("# WARNING: Sending too many Alerts. Aborting!");
+	return;
+}
+			initAlertId(al_id);
+			true_matches.push({
+				alert_id: al_id,
+				temp_data: tmp
+			});
+			alert_id = null;
+			temp_data = {};
+			alert_count++;
+		};
+		var alertDown = function(al_id, tmp){
+if (alert_count >= 100) {
+	console.log("# WARNING: Sending too many Alerts. Aborting!");
+	return;
+}
+			initAlertId(al_id);
+			false_matches.push({
+				alert_id: al_id,
+				temp_data: tmp
+			});
+			alert_id = null;
+			temp_data = {};
+			alert_count++;
+		};
+
 		try {
-			// Check Expression for Array Values
-			if (rule_data["config"]["expr_parsed"].indexOf("[i]") != -1) {
-				try {
-					while(true) {
-						var new_expr = rule_data["config"]["expr_parsed"].replace(/\[i\]/gmi, "["+i+"]");
-						var result = eval(new_expr);
-						var unique_alert_id = getUniqueAlertId(rule_data["config"]["dir_name"], alert_id);
-						// Set Switch as FALSE by default
-						if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
-							TRIGGER_SWITCH[unique_alert_id] = false;
-						}
-						// Initialize Polling Counters to 0 by default
-						if (!POLL_COUNTER.hasOwnProperty(unique_alert_id)) {
-							POLL_COUNTER[unique_alert_id] = {	up: 0, down: 0	};
-						}
-						alert_id_array.push(alert_id);
-						alert_id = null;
-						temp_data_array[i] = temp_data;
-						temp_data = {};
-						if (result) {
-							true_matches.push(i);
-						} else if (result == false) {
-							false_matches.push(i);
-						} else if (result == null) {
-							// Continue
-						} else {
-							console.log("!! Got Undefined Result from evaluating Expression for Rule: "+rule_data["config"]["name"]);
-							break;
-						}
-						i++;
-					}
-				}
-				catch(err) {
-					// Nothing here
-					console.log("Catching Error: ", String(err));
-					//console.log("while loop breaks on i="+i);
-				}
+			try {
+				var new_expr = rule_data["config"]["expr_parsed"];
+				var result = eval(new_expr);
+			}
+			catch(err) {
+				// Nothing here
+				console.log("Failed evaluating Expression: ", String(err));
+				//console.log("while loop breaks on i="+i);
 			}
 
 			// Array based Rules
 			if (true_matches.length > 0 || false_matches.length > 0) {
 				// Trigger Satisfying Alerts
-				true_matches.forEach(function(i_pos){
+				true_matches.forEach(function(match){
 					var tmp_rule_config = JSON.parse(JSON.stringify(rule_data["config"]));
-					for (var z=0; z < tmp_rule_config["alert_start"].length; z++) {
-						tmp_rule_config["alert_start"][z]["text"] = tmp_rule_config["alert_start"][z]["text"].replace(/\[i\]/gmi, "["+i_pos+"]");
-					}
-					triggerAlert(true, alert_id_array[i_pos], tmp_rule_config, es_response, temp_data_array[i_pos], rule_params);
+					triggerAlert(true, match.alert_id, tmp_rule_config, es_response, match.temp_data, rule_params);
 				});
 				// Trigger Non-Satisfying Alerts
-				false_matches.forEach(function(i_pos){
+				false_matches.forEach(function(match){
 					var tmp_rule_config = JSON.parse(JSON.stringify(rule_data["config"]));
-					for (var z=0; z < tmp_rule_config["alert_end"].length; z++) {
-						tmp_rule_config["alert_end"][z]["text"] = tmp_rule_config["alert_end"][z]["text"].replace(/\[i\]/gmi, "["+i_pos+"]");
-					}
-					triggerAlert(false, alert_id_array[i_pos], tmp_rule_config, es_response, temp_data_array[i_pos], rule_params);
+					triggerAlert(false, match.alert_id, tmp_rule_config, es_response, match.temp_data, rule_params);
 				});
-			} else if (rule_data["config"]["expr_parsed"].indexOf("[i]") == -1) {
-				// Non-Array based Rules
-				rule_result = eval(rule_data["config"]["expr_parsed"]);
-				var unique_alert_id = getUniqueAlertId(rule_data["config"]["dir_name"], alert_id);
-				// Set Switch as FALSE by default
-				if (!TRIGGER_SWITCH.hasOwnProperty(unique_alert_id)) {
-					TRIGGER_SWITCH[unique_alert_id] = false;
-				}
-				// Initialize Polling Counters to 0 by default
-				if (!POLL_COUNTER.hasOwnProperty(unique_alert_id)) {
-					POLL_COUNTER[unique_alert_id] = {	up: 0, down: 0	};
-				}
-				if (rule_result) {
-					triggerAlert(true, alert_id, rule_data["config"], es_response, temp_data, rule_params);
-				} else {
-					triggerAlert(false, alert_id, rule_data["config"], es_response, temp_data, rule_params);
-				}
 			}
-
 		}
 		catch(alert_expr_err) {
 			console.log("## Cannot Parse Alert Expression", alert_expr_err);
