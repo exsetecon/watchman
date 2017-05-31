@@ -117,10 +117,10 @@ var replaceParams = function(data){
 	if (matches) {
 		matches.forEach(function(match){
 			// Replace Friendly Time values
-			match_val = match.replace(/([0-9]+)seconds?/gmi, "$1*1000");			    // 1 sec = 1000ms
+			match_val = match.replace(/([0-9]+)seconds?/gmi, "$1*1000");				// 1 sec = 1000ms
 			match_val = match_val.replace(/([0-9]+)minutes?/gmi, "$1*60*1000"); // 1 minute = 60sec x 1000ms
-			match_val = match_val.replace(/([0-9]+)hours?/gmi, "$1*60*60*1000");	    // 1 hour = 60min x 60sec x 1000ms
-			match_val = match_val.replace(/([0-9]+)days?/gmi, "$1*24*60*60*1000");    // 1 day = 24hour x 60min x 60sec x 1000ms
+			match_val = match_val.replace(/([0-9]+)hours?/gmi, "$1*60*60*1000");		// 1 hour = 60min x 60sec x 1000ms
+			match_val = match_val.replace(/([0-9]+)days?/gmi, "$1*24*60*60*1000");	  // 1 day = 24hour x 60min x 60sec x 1000ms
 			var param_val = eval(match_val.replace(/\$\{([^\}]*)\}/gmi, "$1"));
 			data = data.replace(match, param_val);
 		});
@@ -194,7 +194,7 @@ var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_d
 		// Save Trigger State into File on Disk
 		saveTriggers();
 	};
-
+	
 	// Trigger Condition satisfies ?
 	if (trigger_satisfy) {
 		if (TRIGGER_SWITCH[unique_alert_id] == false) {
@@ -214,7 +214,9 @@ var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_d
 				POLL_COUNTER[unique_alert_id].up++;
 			}
 		} else {
+//console.log("Switch True for:",unique_alert_id);
 			if (rule_data["type"] == CONSTANTS.RULE_TYPE.STATELESS) {
+//console.log("Rule Type: "+rule_data["type"]+", STATE: "+CONSTANTS.RULE_TYPE.STATELESS+", MD5: "+unique_alert_id);
 				if (POLL_COUNTER[unique_alert_id].up >= rule_data["poll_count"]-1) {
 					// TRUE ---> TRUE
 					// Issue still ongoing
@@ -254,10 +256,26 @@ var triggerAlert = function(trigger_satisfy, alert_id, rule_data, result, temp_d
 
 // Query Elastic
 var doSearch = function(index, query, success_callback, error_callback){
+	var start_time = Date.now();
+
 	ES_CLIENT.search({
 		index: index,
 		body: query
-	}).then(success_callback, error_callback);
+	}).then(function(response){
+		var time_taken = (Date.now() - start_time)/1000;
+		if (time_taken > 1) {
+			console.log("!!! WARNING: Took "+time_taken+" seconds for " + index);
+		}
+		console.log("<<< Took seconds: ", time_taken);
+		success_callback(response);
+	}, function(error_response){
+		var time_taken = (Date.now() - start_time)/1000;
+		if (time_taken > 1) {
+			console.log("!!! WARNING: Took "+time_taken+" seconds for " + index);
+		}
+		console.log("<<< Took seconds: ", time_taken);
+		error_callback(error_response);
+	});
 };
 
 // Add Rule to Query after specific Intervals of Time
@@ -282,35 +300,35 @@ var addRuleTimer = function(rule_data, schedule_time){
 			}
 			// Initialize Polling Counters to 0 by default
 			if (!POLL_COUNTER.hasOwnProperty(unique_alert_id)) {
-				POLL_COUNTER[unique_alert_id] = {       up: 0, down: 0  };
+				POLL_COUNTER[unique_alert_id] = {	up: 0, down: 0	};
 			}
 		};
 		var alertUp = function(al_id, tmp){
 if (alert_count >= 100) {
-	console.log("# WARNING: Sending too many Alerts. Aborting!");
+	console.log("# WARNING: "+rule_data["config"]["name"]+": Sending too many Alerts. Aborting!");
 	return;
 }
 			initAlertId(al_id);
 			true_matches.push({
 				alert_id: al_id,
-				temp_data: tmp
+				temp_data: JSON.parse(JSON.stringify(tmp))
 			});
 			alert_id = null;
-			temp_data = {};
+			//temp_data = {};
 			alert_count++;
 		};
 		var alertDown = function(al_id, tmp){
 if (alert_count >= 100) {
-	console.log("# WARNING: Sending too many Alerts. Aborting!");
+	console.log("# WARNING: "+rule_data["config"]["name"]+": Sending too many Alerts. Aborting!");
 	return;
 }
 			initAlertId(al_id);
 			false_matches.push({
 				alert_id: al_id,
-				temp_data: tmp
+				temp_data: JSON.parse(JSON.stringify(tmp))
 			});
 			alert_id = null;
-			temp_data = {};
+			//temp_data = {};
 			alert_count++;
 		};
 
@@ -321,7 +339,7 @@ if (alert_count >= 100) {
 			}
 			catch(err) {
 				// Nothing here
-				console.log("Failed evaluating Expression: ", String(err));
+				console.log("Failed evaluating Expression: ", err);
 				//console.log("while loop breaks on i="+i);
 			}
 
